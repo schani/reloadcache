@@ -16,6 +16,9 @@ type entry struct {
 	count       int
 	lastFetched time.Time
 	fetching    bool
+	// Each waiter is a channel waiting for a byte slice.
+	// If the fetch fails we close the channel.
+	waiters []chan<- []byte
 }
 
 type keepMessage interface {
@@ -23,7 +26,8 @@ type keepMessage interface {
 }
 
 type requestKeepMessage struct {
-	path string
+	path   string
+	waiter chan<- []byte
 }
 
 func (rkm *requestKeepMessage) Path() string {
@@ -40,6 +44,7 @@ func (fkm *fetchingKeepMessage) Path() string {
 
 type fetchedKeepMessage struct {
 	path string
+	data *[]byte
 }
 
 func (fkm *fetchedKeepMessage) Path() string {
@@ -74,8 +79,8 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *keep) sendRequestMessage(path string) {
-	msg := requestKeepMessage{path: path}
+func (k *keep) sendRequestMessage(path string, waiter chan<- []byte) {
+	msg := requestKeepMessage{path: path, waiter: waiter}
 	k.messageChannel <- &msg
 }
 
@@ -84,16 +89,17 @@ func (k *keep) sendFetchingMessage(path string) {
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchedMessage(path string) {
-	msg := fetchedKeepMessage{path: path}
+func (k *keep) sendFetchedMessage(path string, data *[]byte) {
+	msg := fetchedKeepMessage{path: path, data: data}
 	k.messageChannel <- &msg
 }
 
 func (k *keep) fetch(path string, otherWriter io.Writer) {
+	var data *[]byte
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer k.sendFetchedMessage(path)
+	defer func() { k.sendFetchedMessage(path, data) }()
 
 	req, err := http.NewRequest("GET", "http://localhost:8080"+path, nil)
 	if err != nil {
@@ -121,8 +127,11 @@ func (k *keep) fetch(path string, otherWriter io.Writer) {
 		return
 	}
 
+	bytes := buffer.Bytes()
+	data = &bytes
+
 	go func() {
-		err = mc.Set(&memcache.Item{Key: path, Value: buffer.Bytes()})
+		err = mc.Set(&memcache.Item{Key: path, Value: bytes})
 		if err != nil {
 			fmt.Printf("memcache set error\n")
 		}
@@ -181,14 +190,32 @@ func (k *keep) run() {
 			if !ok {
 				e.lastFetched = time.Now()
 			}
-			switch msg.(type) {
+			switch msg := msg.(type) {
 			case *requestKeepMessage:
 				e.count++
+				if e.fetching {
+					fmt.Printf("adding waiter\n")
+					e.waiters = append(e.waiters, msg.waiter)
+				} else {
+					close(msg.waiter)
+				}
 			case *fetchingKeepMessage:
 				e.fetching = true
 			case *fetchedKeepMessage:
 				e.lastFetched = time.Now()
 				e.fetching = false
+				if msg.data == nil {
+					fmt.Printf("no data fetched\n")
+				}
+				for _, waiter := range e.waiters {
+					if msg.data != nil {
+						fmt.Printf("satisfying waiter\n")
+						waiter <- *msg.data
+					} else {
+						close(waiter)
+					}
+				}
+				e.waiters = e.waiters[0:0]
 			}
 			k.entries[path] = e
 		case <-timerChannel:
@@ -204,20 +231,34 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	fmt.Printf("request for %s\n", path)
 
-	theKeep.sendRequestMessage(path)
+	// FIXME: It should be the fetching message that sends a
+	// waiter channel, not the request message.  The way it
+	// is now we can end up with more than handler fetching
+	// the same URL in parallel.
 
-	item, err := mc.Get(path)
-	if err == nil {
-		fmt.Printf("found in cache\n")
-		_, err = w.Write(item.Value)
-		if err != nil {
-			fmt.Printf("write error")
+	waiter := make(chan []byte)
+	theKeep.sendRequestMessage(path, waiter)
+	data, ok := <-waiter
+	if ok {
+		fmt.Printf("got data from parallel fetch\n")
+	} else {
+		item, err := mc.Get(path)
+		if err == nil {
+			fmt.Printf("found in cache\n")
+		} else {
+			fmt.Printf("not in cache - requesting\n")
+			theKeep.sendFetchingMessage(path)
+			theKeep.fetch(path, w)
 			return
 		}
-	} else {
-		fmt.Printf("not in cache - requesting\n")
-		theKeep.sendFetchingMessage(path)
-		theKeep.fetch(path, w)
+
+		data = item.Value
+	}
+
+	_, err := w.Write(data)
+	if err != nil {
+		fmt.Printf("write error")
+		return
 	}
 }
 
