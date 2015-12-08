@@ -23,12 +23,19 @@ type keepMessage interface {
 }
 
 type requestKeepMessage struct {
-	path     string
-	fetching bool
+	path string
 }
 
 func (rkm *requestKeepMessage) Path() string {
 	return rkm.path
+}
+
+type fetchingKeepMessage struct {
+	path string
+}
+
+func (fkm *fetchingKeepMessage) Path() string {
+	return fkm.path
 }
 
 type fetchedKeepMessage struct {
@@ -67,8 +74,13 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *keep) sendRequestMessage(path string, fetching bool) {
-	msg := requestKeepMessage{path: path, fetching: fetching}
+func (k *keep) sendRequestMessage(path string) {
+	msg := requestKeepMessage{path: path}
+	k.messageChannel <- &msg
+}
+
+func (k *keep) sendFetchingMessage(path string) {
+	msg := fetchingKeepMessage{path: path}
 	k.messageChannel <- &msg
 }
 
@@ -169,12 +181,11 @@ func (k *keep) run() {
 			if !ok {
 				e.lastFetched = time.Now()
 			}
-			switch msg := msg.(type) {
+			switch msg.(type) {
 			case *requestKeepMessage:
 				e.count++
-				if msg.fetching {
-					e.fetching = true
-				}
+			case *fetchingKeepMessage:
+				e.fetching = true
 			case *fetchedKeepMessage:
 				e.lastFetched = time.Now()
 				e.fetching = false
@@ -193,6 +204,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	fmt.Printf("request for %s\n", path)
 
+	theKeep.sendRequestMessage(path)
+
 	item, err := mc.Get(path)
 	if err == nil {
 		fmt.Printf("found in cache\n")
@@ -201,10 +214,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("write error")
 			return
 		}
-		theKeep.sendRequestMessage(path, false)
 	} else {
 		fmt.Printf("not in cache - requesting\n")
-		theKeep.sendRequestMessage(path, true)
+		theKeep.sendFetchingMessage(path)
 		theKeep.fetch(path, w)
 	}
 }
