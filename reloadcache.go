@@ -18,16 +18,31 @@ type entry struct {
 	fetching    bool
 }
 
-type keepRequest struct {
+type keepMessage interface {
+	Path() string
+}
+
+type requestKeepMessage struct {
 	path     string
 	fetching bool
-	fetched  bool
+}
+
+func (rkm *requestKeepMessage) Path() string {
+	return rkm.path
+}
+
+type fetchedKeepMessage struct {
+	path string
+}
+
+func (fkm *fetchedKeepMessage) Path() string {
+	return fkm.path
 }
 
 type keep struct {
 	entries        map[string]*entry
 	timer          *time.Timer
-	requestChannel chan keepRequest
+	messageChannel chan keepMessage
 }
 
 const expireDuration time.Duration = time.Duration(10) * time.Second
@@ -52,16 +67,21 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *keep) sendRequest(path string, fetching bool, fetched bool) {
-	req := keepRequest{path: path, fetching: fetching, fetched: fetched}
-	k.requestChannel <- req
+func (k *keep) sendRequestMessage(path string, fetching bool) {
+	msg := requestKeepMessage{path: path, fetching: fetching}
+	k.messageChannel <- &msg
+}
+
+func (k *keep) sendFetchedMessage(path string) {
+	msg := fetchedKeepMessage{path: path}
+	k.messageChannel <- &msg
 }
 
 func (k *keep) fetch(path string, otherWriter io.Writer) {
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer k.sendRequest(path, false, true)
+	defer k.sendFetchedMessage(path)
 
 	req, err := http.NewRequest("GET", "http://localhost:8080"+path, nil)
 	if err != nil {
@@ -140,23 +160,26 @@ func (k *keep) run() {
 			timerChannel = k.timer.C
 		}
 		select {
-		case req := <-k.requestChannel:
-			e, ok := k.entries[req.path]
+		case msg := <-k.messageChannel:
+			path := msg.Path()
+			e, ok := k.entries[path]
 			if !ok {
-				e = &entry{path: req.path, count: 0}
+				e = &entry{path: path, count: 0}
 			}
-			if !ok || req.fetched {
+			if !ok {
 				e.lastFetched = time.Now()
 			}
-			if req.fetching {
-				e.fetching = true
-			}
-			if req.fetched {
-				e.fetching = false
-			} else {
+			switch msg := msg.(type) {
+			case *requestKeepMessage:
 				e.count++
+				if msg.fetching {
+					e.fetching = true
+				}
+			case *fetchedKeepMessage:
+				e.lastFetched = time.Now()
+				e.fetching = false
 			}
-			k.entries[req.path] = e
+			k.entries[path] = e
 		case <-timerChannel:
 			k.timer = nil
 		}
@@ -178,16 +201,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("write error")
 			return
 		}
-		theKeep.sendRequest(path, false, false)
+		theKeep.sendRequestMessage(path, false)
 	} else {
 		fmt.Printf("not in cache - requesting\n")
-		theKeep.sendRequest(path, true, false)
+		theKeep.sendRequestMessage(path, true)
 		theKeep.fetch(path, w)
 	}
 }
 
 func main() {
-	theKeep = &keep{entries: make(map[string]*entry), requestChannel: make(chan keepRequest)}
+	theKeep = &keep{entries: make(map[string]*entry), messageChannel: make(chan keepMessage)}
 	go theKeep.run()
 
 	mc = memcache.New("localhost:11211")
