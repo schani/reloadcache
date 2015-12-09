@@ -6,6 +6,7 @@ import (
 	"github.com/bradfitz/gomemcache/memcache"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -27,8 +28,7 @@ type keepMessage interface {
 }
 
 type requestKeepMessage struct {
-	path   string
-	waiter chan<- []byte
+	path string
 }
 
 func (rkm *requestKeepMessage) Path() string {
@@ -36,7 +36,8 @@ func (rkm *requestKeepMessage) Path() string {
 }
 
 type fetchingKeepMessage struct {
-	path string
+	path   string
+	waiter chan<- []byte
 }
 
 func (fkm *fetchingKeepMessage) Path() string {
@@ -80,13 +81,13 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *keep) sendRequestMessage(path string, waiter chan<- []byte) {
-	msg := requestKeepMessage{path: path, waiter: waiter}
+func (k *keep) sendRequestMessage(path string) {
+	msg := requestKeepMessage{path: path}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchingMessage(path string) {
-	msg := fetchingKeepMessage{path: path}
+func (k *keep) sendFetchingMessage(path string, waiter chan<- []byte) {
+	msg := fetchingKeepMessage{path: path, waiter: waiter}
 	k.messageChannel <- &msg
 }
 
@@ -204,15 +205,18 @@ func (k *keep) run() {
 			switch msg := msg.(type) {
 			case *requestKeepMessage:
 				e.count++
+			case *fetchingKeepMessage:
 				if e.fetching {
 					fmt.Printf("adding waiter\n")
 					e.waiters = append(e.waiters, msg.waiter)
 				} else {
 					close(msg.waiter)
+					e.fetching = true
 				}
-			case *fetchingKeepMessage:
-				e.fetching = true
 			case *fetchedKeepMessage:
+				if !e.fetching {
+					panic("We got a fetched, but we're not fetching")
+				}
 				e.lastFetched = time.Now()
 				e.fetching = false
 				if msg.data == nil {
@@ -246,34 +250,33 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 	fmt.Printf("request for %s\n", path)
+	theKeep.sendRequestMessage(path)
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 
-	// FIXME: It should be the fetching message that sends a
-	// waiter channel, not the request message.  The way it
-	// is now we can end up with more than handler fetching
-	// the same URL in parallel.
+	var data []byte
 
-	waiter := make(chan []byte)
-	theKeep.sendRequestMessage(path, waiter)
-	data, ok := <-waiter
-	if ok {
-		fmt.Printf("got data from parallel fetch\n")
+	item, err := mc.Get(path)
+	if err == nil {
+		fmt.Printf("found in cache\n")
+		data = item.Value
 	} else {
-		item, err := mc.Get(path)
-		if err == nil {
-			fmt.Printf("found in cache\n")
+		fmt.Printf("not in cache - requesting\n")
+
+		waiter := make(chan []byte)
+		theKeep.sendFetchingMessage(path, waiter)
+
+		dataFromOtherFetch, ok := <-waiter
+		if ok {
+			fmt.Printf("got data from parallel fetch\n")
+			data = dataFromOtherFetch
 		} else {
-			fmt.Printf("not in cache - requesting\n")
-			theKeep.sendFetchingMessage(path)
 			theKeep.fetch(path, w)
 			return
 		}
-
-		data = item.Value
 	}
 
-	_, err := w.Write(data)
+	_, err = w.Write(data)
 	if err != nil {
 		fmt.Printf("write error")
 		return
@@ -287,5 +290,9 @@ func main() {
 	mc = memcache.New("localhost:11211")
 
 	http.HandleFunc("/", handler)
-	http.ListenAndServe(":8081", nil)
+	err := http.ListenAndServe(":8081", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Listen failed: %s\n", err.Error())
+		os.Exit(1)
+	}
 }
