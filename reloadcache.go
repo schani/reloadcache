@@ -6,6 +6,7 @@ import (
 	"github.com/bradfitz/gomemcache/memcache"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -94,14 +95,14 @@ func (k *keep) sendFetchedMessage(path string, data *[]byte) {
 	k.messageChannel <- &msg
 }
 
-func (k *keep) fetch(path string, otherWriter io.Writer) {
+func (k *keep) fetch(path string, responseWriter http.ResponseWriter) {
 	var data *[]byte
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
 	defer func() { k.sendFetchedMessage(path, data) }()
 
-	req, err := http.NewRequest("GET", "http://localhost:8080"+path, nil)
+	req, err := http.NewRequest("GET", "http://localhost:8085"+path, nil)
 	if err != nil {
 		fmt.Printf("request construction error\n")
 		return
@@ -113,12 +114,22 @@ func (k *keep) fetch(path string, otherWriter io.Writer) {
 		return
 	}
 
+	if strings.Split(resp.Header.Get("Content-Type"), ";")[0] != "application/json" {
+		if responseWriter != nil {
+			http.Error(responseWriter, "Endpoint does not return JSON", http.StatusBadRequest)
+		}
+		fmt.Printf("not JSON\n")
+		return
+	}
+
 	buffer := new(bytes.Buffer)
 	var writer io.Writer
-	if otherWriter == nil {
+	if responseWriter == nil {
 		writer = buffer
 	} else {
-		writer = io.MultiWriter(otherWriter, buffer)
+		responseWriter.WriteHeader(http.StatusOK)
+
+		writer = io.MultiWriter(responseWriter, buffer)
 	}
 
 	_, err = io.Copy(writer, resp.Body)
@@ -228,8 +239,15 @@ func (k *keep) run() {
 var theKeep *keep
 
 func handler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "" && r.Method != "GET" {
+		http.Error(w, "Only GET method supported", http.StatusBadRequest)
+		return
+	}
+
 	path := r.URL.Path
 	fmt.Printf("request for %s\n", path)
+
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 
 	// FIXME: It should be the fetching message that sends a
 	// waiter channel, not the request message.  The way it
