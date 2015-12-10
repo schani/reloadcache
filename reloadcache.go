@@ -5,6 +5,7 @@ import (
 	"github.com/bradfitz/gomemcache/memcache"
 	"net/http"
 	"os"
+	"sort"
 )
 
 type memcacheCache struct {
@@ -67,15 +68,37 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type entryInfos []entryInfo
+
+func (infos entryInfos) Len() int {
+	return len(infos)
+}
+
+func (infos entryInfos) Less(i, j int) bool {
+	return infos[i].path < infos[j].path
+}
+
+func (infos entryInfos) Swap(i, j int) {
+	tmp := infos[i]
+	infos[i] = infos[j]
+	infos[j] = tmp
+}
+
 func keepHandler(w http.ResponseWriter, r *http.Request) {
 	c := make(chan entryInfo)
 	theKeep.sendDumpKeepMessage(c)
+
+	infos := make(entryInfos, 0)
+	for ei := range c {
+		infos = append(infos, ei)
+	}
+	sort.Sort(infos)
 
 	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 
 	fmt.Fprintf(w, "<html><body><table>\n")
 	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th>Fetching?</th></tr>")
-	for ei := range c {
+	for _, ei := range infos {
 		var fetchingString string
 		if ei.fetching {
 			fetchingString = "Yes"
