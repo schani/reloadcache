@@ -2,9 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
-	// FIXME: Keep shouldn't do HTTP
 	"net/http"
 	"strings"
 	"time"
@@ -17,11 +17,16 @@ type entryInfo struct {
 	fetching    bool
 }
 
+type fetchResult struct {
+	data []byte
+	err error
+}
+
 type entry struct {
 	info entryInfo
 	// Each waiter is a channel waiting for a byte slice.
 	// If the fetch fails we close the channel.
-	waiters []chan<- []byte
+	waiters []chan<- fetchResult
 }
 
 type keepMessage interface {
@@ -39,7 +44,7 @@ type fetchingKeepMessage struct {
 
 type fetchedKeepMessage struct {
 	path string
-	data *[]byte
+	result fetchResult
 }
 
 type cache interface {
@@ -59,22 +64,25 @@ func (k *keep) sendRequestMessage(path string) {
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchingMessage(path string, waiter chan<- []byte) {
+func (k *keep) sendFetchingMessage(path string, waiter chan<- fetchResult) {
 	msg := fetchingKeepMessage{path: path, waiter: waiter}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchedMessage(path string, data *[]byte) {
-	msg := fetchedKeepMessage{path: path, data: data}
+func (k *keep) sendFetchedMessage(path string, result fetchResult) {
+	msg := fetchedKeepMessage{path: path, result: result}
+	k.messageChannel <- &msg
 	k.messageChannel <- &msg
 }
 
 func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
-	var dataPtr *[]byte
+	var data []byte
+	var err error
+
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer func() { k.sendFetchedMessage(path, dataPtr) }()
+	defer func() { k.sendFetchedMessage(path, fetchResult{data: data, err: err}) }()
 
 	req, err := http.NewRequest("GET", "http://localhost:8085"+path, nil)
 	if err != nil {
@@ -90,7 +98,8 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 
 	if strings.Split(resp.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		if responseWriter != nil {
-			http.Error(responseWriter, "Endpoint does not return JSON", http.StatusBadRequest)
+			err = errors.New("Endpoint does not result JSON")
+			http.Error(responseWriter, err.Error(), http.StatusBadRequest)
 		}
 		fmt.Printf("not JSON\n")
 		return nil
@@ -98,6 +107,11 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 
 	buffer := new(bytes.Buffer)
 	var writer io.Writer
+	
+	// FIXME: We shouldn't do HTTP stuff on the response writer here.
+	// Best not to assume a responseWriter at all but instead just
+	// get a function that takes our writer and returns the writer
+	// to actually write to.
 	if responseWriter == nil {
 		writer = buffer
 	} else {
@@ -112,11 +126,10 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 		return nil
 	}
 
-	data := buffer.Bytes()
-	dataPtr = &data
+	data = buffer.Bytes()
 
 	go func() {
-		err = k.cache.Set(path, data)
+		err := k.cache.Set(path, data)
 		if err != nil {
 			fmt.Printf("cache set error\n")
 		}
@@ -226,16 +239,10 @@ func (msg *fetchedKeepMessage) Process(k *keep) {
 
 	e.info.lastFetched = time.Now()
 	e.info.fetching = false
-	if msg.data == nil {
-		fmt.Printf("no data fetched\n")
-	}
+
 	for _, waiter := range e.waiters {
-		if msg.data != nil {
-			fmt.Printf("satisfying waiter\n")
-			waiter <- *msg.data
-		} else {
-			close(waiter)
-		}
+		waiter <- msg.result
+		close(waiter)
 	}
 	e.waiters = e.waiters[0:0]
 }

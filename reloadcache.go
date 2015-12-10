@@ -43,13 +43,17 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Printf("not in cache - requesting\n")
 
-		waiter := make(chan []byte)
+		waiter := make(chan fetchResult)
 		theKeep.sendFetchingMessage(path, waiter)
 
-		dataFromOtherFetch, ok := <-waiter
+		result, ok := <-waiter
 		if ok {
-			fmt.Printf("got data from parallel fetch\n")
-			data = dataFromOtherFetch
+			fmt.Printf("got result from parallel fetch\n")
+			if result.err != nil {
+				http.Error(w, result.err.Error(), http.StatusBadRequest)
+				return
+			}
+			data = result.data
 		} else {
 			theKeep.fetch(path, w)
 			return
