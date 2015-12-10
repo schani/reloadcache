@@ -11,7 +11,7 @@ type memcacheCache struct {
 	c *memcache.Client
 }
 
-var theKeep *Keep
+var theKeep *keep
 
 func (c memcacheCache) Get(path string) (data []byte, err error) {
 	item, err := c.c.Get(path)
@@ -37,7 +37,7 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 
-	data, err := theKeep.Cache.Get(path)
+	data, err := theKeep.cache.Get(path)
 	if err == nil {
 		fmt.Printf("found in cache\n")
 	} else {
@@ -65,7 +65,7 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	cache := memcacheCache{c: memcache.New("localhost:11211")}
-	theKeep = NewKeep(cache)
+	theKeep = newKeep(cache)
 	go theKeep.run()
 
 	http.HandleFunc("/", cacheHandler)
