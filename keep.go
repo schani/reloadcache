@@ -19,7 +19,7 @@ type entryInfo struct {
 
 type fetchResult struct {
 	data []byte
-	err error
+	err  error
 }
 
 type entry struct {
@@ -39,12 +39,16 @@ type requestKeepMessage struct {
 
 type fetchingKeepMessage struct {
 	path   string
-	waiter chan<- []byte
+	waiter chan<- fetchResult
 }
 
 type fetchedKeepMessage struct {
-	path string
+	path   string
 	result fetchResult
+}
+
+type dumpKeepMessage struct {
+	channel chan<- entryInfo
 }
 
 type cache interface {
@@ -72,6 +76,10 @@ func (k *keep) sendFetchingMessage(path string, waiter chan<- fetchResult) {
 func (k *keep) sendFetchedMessage(path string, result fetchResult) {
 	msg := fetchedKeepMessage{path: path, result: result}
 	k.messageChannel <- &msg
+}
+
+func (k *keep) sendDumpKeepMessage(channel chan<- entryInfo) {
+	msg := dumpKeepMessage{channel: channel}
 	k.messageChannel <- &msg
 }
 
@@ -107,7 +115,7 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 
 	buffer := new(bytes.Buffer)
 	var writer io.Writer
-	
+
 	// FIXME: We shouldn't do HTTP stuff on the response writer here.
 	// Best not to assume a responseWriter at all but instead just
 	// get a function that takes our writer and returns the writer
@@ -245,6 +253,13 @@ func (msg *fetchedKeepMessage) Process(k *keep) {
 		close(waiter)
 	}
 	e.waiters = e.waiters[0:0]
+}
+
+func (msg *dumpKeepMessage) Process(k *keep) {
+	for _, e := range k.entries {
+		msg.channel <- e.info
+	}
+	close(msg.channel)
 }
 
 func (k *keep) run() {

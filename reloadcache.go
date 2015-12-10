@@ -67,12 +67,34 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func keepHandler(w http.ResponseWriter, r *http.Request) {
+	c := make(chan entryInfo)
+	theKeep.sendDumpKeepMessage(c)
+
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+
+	fmt.Fprintf(w, "<html><body><table>\n")
+	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th>Fetching?</th></tr>")
+	for ei := range c {
+		var fetchingString string
+		if ei.fetching {
+			fetchingString = "Yes"
+		} else {
+			fetchingString = "No"
+		}
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>\n",
+			ei.path, ei.count, ei.lastFetched, fetchingString)
+	}
+	fmt.Fprintf(w, "</table></body></html>\n")
+}
+
 func main() {
 	cache := memcacheCache{c: memcache.New("localhost:11211")}
 	theKeep = newKeep(cache)
 	go theKeep.run()
 
 	http.HandleFunc("/", cacheHandler)
+	http.HandleFunc("/admin/keep", keepHandler)
 	err := http.ListenAndServe(":8081", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Listen failed: %s\n", err.Error())
