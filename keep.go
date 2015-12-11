@@ -61,6 +61,7 @@ type keep struct {
 	timer          *time.Timer
 	messageChannel chan keepMessage
 	cache          cache
+	expireDuration time.Duration
 }
 
 func (k *keep) sendRequestMessage(path string) {
@@ -153,15 +154,13 @@ func (k *keep) fetchExpired() {
 		if e.info.fetching {
 			continue
 		}
-		if e.info.lastFetched.Add(expireDuration).Before(now) {
+		if e.info.lastFetched.Add(k.expireDuration).Before(now) {
 			fmt.Printf("fetching %s\n", e.info.path)
 			e.info.fetching = true
 			go k.fetch(e.info.path, nil)
 		}
 	}
 }
-
-const expireDuration time.Duration = time.Duration(10) * time.Second
 
 func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	now := time.Now()
@@ -176,7 +175,7 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 			expiring = true
 		}
 	}
-	expires := earliest.Add(expireDuration)
+	expires := earliest.Add(k.expireDuration)
 	if expires.Before(now) {
 		return 0, expiring
 	}
@@ -279,6 +278,9 @@ func (k *keep) run() {
 	}
 }
 
-func newKeep(c cache) *keep {
-	return &keep{cache: c, entries: make(map[string]*entry), messageChannel: make(chan keepMessage)}
+func newKeep(c cache, expireDuration time.Duration) *keep {
+	return &keep{cache: c,
+		entries: make(map[string]*entry),
+		messageChannel: make(chan keepMessage),
+		expireDuration: expireDuration}
 }

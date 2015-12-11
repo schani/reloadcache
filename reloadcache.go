@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"time"
 )
 
 type memcacheCache struct {
@@ -111,9 +112,11 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "</table></body></html>\n")
 }
 
+const expireDuration time.Duration = time.Duration(10) * time.Second
+
 func main() {
 	cache := memcacheCache{c: memcache.New("localhost:11211")}
-	theKeep = newKeep(cache)
+	theKeep = newKeep(cache, expireDuration)
 	go theKeep.run()
 
 	http.HandleFunc("/", cacheHandler)
