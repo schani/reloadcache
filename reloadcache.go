@@ -98,7 +98,7 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 
 	fmt.Fprintf(w, "<html><body><table>\n")
-	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th>Fetching?</th></tr>")
+	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th># expires since last decay</th><th>Fetching?</th></tr>")
 	for _, ei := range infos {
 		var fetchingString string
 		if ei.fetching {
@@ -106,17 +106,18 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fetchingString = "No"
 		}
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>\n",
-			ei.path, ei.count, ei.lastFetched, fetchingString)
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%d</td><td>%s</td></tr>\n",
+			ei.path, ei.count, ei.lastFetched, ei.numExpiredSinceLastDecay, fetchingString)
 	}
 	fmt.Fprintf(w, "</table></body></html>\n")
 }
 
 const expireDuration time.Duration = time.Duration(10) * time.Second
+const numExpiresToDecay int = 5
 
 func main() {
 	cache := memcacheCache{c: memcache.New("localhost:11211")}
-	theKeep = newKeep(cache, expireDuration)
+	theKeep = newKeep(cache, expireDuration, numExpiresToDecay)
 	go theKeep.run()
 
 	http.HandleFunc("/", cacheHandler)

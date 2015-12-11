@@ -11,10 +11,11 @@ import (
 )
 
 type entryInfo struct {
-	path        string
-	count       int
-	lastFetched time.Time
-	fetching    bool
+	path                     string
+	count                    int
+	lastFetched              time.Time
+	fetching                 bool
+	numExpiredSinceLastDecay int
 }
 
 type fetchResult struct {
@@ -57,11 +58,12 @@ type cache interface {
 }
 
 type keep struct {
-	entries        map[string]*entry
-	timer          *time.Timer
-	messageChannel chan keepMessage
-	cache          cache
-	expireDuration time.Duration
+	entries           map[string]*entry
+	timer             *time.Timer
+	messageChannel    chan keepMessage
+	cache             cache
+	expireDuration    time.Duration
+	numExpiresToDecay int
 }
 
 func (k *keep) sendRequestMessage(path string) {
@@ -151,8 +153,14 @@ func (k *keep) fetchExpired() {
 	fmt.Printf("fetching expired\n")
 	now := time.Now()
 	for _, e := range k.entries {
-		if e.info.fetching {
+		if e.info.fetching || e.info.count <= 0 {
 			continue
+		}
+		e.info.numExpiredSinceLastDecay++
+		if e.info.numExpiredSinceLastDecay >= k.numExpiresToDecay {
+			e.info.count--
+			e.info.numExpiredSinceLastDecay = 0
+			// FIXME: delete entries with count==0
 		}
 		if e.info.lastFetched.Add(k.expireDuration).Before(now) {
 			fmt.Printf("fetching %s\n", e.info.path)
@@ -167,7 +175,7 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	earliest := now
 	expiring = false
 	for _, e := range k.entries {
-		if e.info.fetching {
+		if e.info.fetching || e.info.count <= 0 {
 			continue
 		}
 		if e.info.lastFetched.Before(earliest) {
@@ -278,9 +286,10 @@ func (k *keep) run() {
 	}
 }
 
-func newKeep(c cache, expireDuration time.Duration) *keep {
+func newKeep(c cache, expireDuration time.Duration, numExpiresToDecay int) *keep {
 	return &keep{cache: c,
-		entries: make(map[string]*entry),
-		messageChannel: make(chan keepMessage),
-		expireDuration: expireDuration}
+		entries:           make(map[string]*entry),
+		messageChannel:    make(chan keepMessage),
+		expireDuration:    expireDuration,
+		numExpiresToDecay: numExpiresToDecay}
 }
