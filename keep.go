@@ -62,6 +62,7 @@ type keep struct {
 	timer             *time.Timer
 	messageChannel    chan keepMessage
 	cache             cache
+	server            string
 	expireDuration    time.Duration
 	numExpiresToDecay int
 }
@@ -95,7 +96,7 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 	// ever actually be fetched again.
 	defer func() { k.sendFetchedMessage(path, fetchResult{data: data, err: err}) }()
 
-	req, err := http.NewRequest("GET", "http://localhost:8085"+path, nil)
+	req, err := http.NewRequest("GET", k.server+path, nil)
 	if err != nil {
 		fmt.Printf("request construction error\n")
 		return err
@@ -286,8 +287,9 @@ func (k *keep) run() {
 	}
 }
 
-func newKeep(c cache, expireDuration time.Duration, numExpiresToDecay int) *keep {
+func newKeep(c cache, server string, expireDuration time.Duration, numExpiresToDecay int) *keep {
 	return &keep{cache: c,
+		server:            server,
 		entries:           make(map[string]*entry),
 		messageChannel:    make(chan keepMessage),
 		expireDuration:    expireDuration,

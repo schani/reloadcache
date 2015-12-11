@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/bradfitz/gomemcache/memcache"
 	"net/http"
@@ -112,17 +113,22 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "</table></body></html>\n")
 }
 
-const expireDuration time.Duration = time.Duration(10) * time.Second
-const numExpiresToDecay int = 5
-
 func main() {
-	cache := memcacheCache{c: memcache.New("localhost:11211")}
-	theKeep = newKeep(cache, expireDuration, numExpiresToDecay)
+	memcacheFlag := flag.String("memcache", "localhost:11211", "memcached host and port")
+	serverFlag := flag.String("server", "http://localhost:8085", "the proxed server")
+	portFlag := flag.Int("port", 8081, "port on which to listen")
+	expireDurationFlag := flag.Int("expire", 10, "expire duration in seconds")
+	numExpiresToDecayFlag := flag.Int("decay", 5, "number of expires for one decay")
+
+	flag.Parse()
+
+	cache := memcacheCache{c: memcache.New(*memcacheFlag)}
+	theKeep = newKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
 	go theKeep.run()
 
 	http.HandleFunc("/", cacheHandler)
 	http.HandleFunc("/admin/keep", keepHandler)
-	err := http.ListenAndServe(":8081", nil)
+	err := http.ListenAndServe(fmt.Sprintf(":%d", *portFlag), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Listen failed: %s\n", err.Error())
 		os.Exit(1)
