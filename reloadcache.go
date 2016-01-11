@@ -35,6 +35,9 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
+    if r.URL.RawQuery != "" {
+        path = path + "?" + r.URL.RawQuery
+    }
 	fmt.Printf("request for %s\n", path)
 	theKeep.sendRequestMessage(path)
 
