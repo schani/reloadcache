@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/bradfitz/gomemcache/memcache"
+    "github.com/nytimes/gziphandler"
 	"net/http"
 	"os"
 	"sort"
@@ -129,7 +130,7 @@ func main() {
 	theKeep = newKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
 	go theKeep.run()
 
-	http.HandleFunc("/", cacheHandler)
+	http.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(cacheHandler)))
 	http.HandleFunc("/admin/keep", keepHandler)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", *portFlag), nil)
 	if err != nil {
