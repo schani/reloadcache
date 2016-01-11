@@ -113,7 +113,7 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 			err = errors.New("Endpoint does not result JSON")
 			http.Error(responseWriter, err.Error(), http.StatusBadRequest)
 		}
-		fmt.Printf("not JSON\n")
+		fmt.Printf("not JSON: %s\n", resp.Header)
 		return nil
 	}
 
