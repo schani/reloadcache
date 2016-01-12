@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/bradfitz/gomemcache/memcache"
-    "github.com/nytimes/gziphandler"
+	"github.com/nytimes/gziphandler"
 	"net/http"
 	"os"
 	"sort"
@@ -36,9 +36,9 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
-    if r.URL.RawQuery != "" {
-        path = path + "?" + r.URL.RawQuery
-    }
+	if r.URL.RawQuery != "" {
+		path = path + "?" + r.URL.RawQuery
+	}
 	fmt.Printf("request for %s\n", path)
 	theKeep.sendRequestMessage(path)
 
