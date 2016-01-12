@@ -43,17 +43,17 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	theKeep.sendRequestMessage(path)
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-    
-    origin := r.Header.Get("Origin") 
-    if origin != "" {
-        w.Header().Set("Access-Control-Allow-Origin", origin)
-    }
+
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
 
 	data, err := theKeep.cache.Get(path)
 	if err == nil {
-		fmt.Printf("found in cache\n")
+		fmt.Printf("found in cache %s\n", path)
 	} else {
-		fmt.Printf("not in cache - requesting\n")
+		fmt.Printf("not in cache - requesting %s\n", path)
 
 		waiter := make(chan fetchResult)
 		theKeep.sendFetchingMessage(path, waiter)
@@ -132,12 +132,17 @@ func main() {
 	flag.Parse()
 
 	cache := memcacheCache{c: memcache.New(*memcacheFlag)}
+	err := cache.c.DeleteAll()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Couldn't flush memcache: %s\n", err.Error())
+	}
+
 	theKeep = newKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
 	go theKeep.run()
 
 	http.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(cacheHandler)))
 	http.HandleFunc("/admin/keep", keepHandler)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", *portFlag), nil)
+	err = http.ListenAndServe(fmt.Sprintf(":%d", *portFlag), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Listen failed: %s\n", err.Error())
 		os.Exit(1)
