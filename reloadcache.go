@@ -43,6 +43,11 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	theKeep.sendRequestMessage(path)
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+    
+    origin := r.Header.Get("Origin") 
+    if origin != "" {
+        w.Header().Set("Access-Control-Allow-Origin", origin)
+    }
 
 	data, err := theKeep.cache.Get(path)
 	if err == nil {
