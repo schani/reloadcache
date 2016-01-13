@@ -52,6 +52,10 @@ type dumpKeepMessage struct {
 	channel chan<- entryInfo
 }
 
+type dontReloadKeepMessage struct {
+	path string
+}
+
 type cache interface {
 	// FIXME: The keep never actually uses Get
 	Get(path string) (data []byte, err error)
@@ -86,6 +90,11 @@ func (k *keep) sendFetchedMessage(path string, result fetchResult) {
 
 func (k *keep) sendDumpKeepMessage(channel chan<- entryInfo) {
 	msg := dumpKeepMessage{channel: channel}
+	k.messageChannel <- &msg
+}
+
+func (k *keep) sendDontReloadKeepMessage(path string) {
+	msg := dontReloadKeepMessage{path: path}
 	k.messageChannel <- &msg
 }
 
@@ -146,6 +155,7 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 		err := k.cache.Set(path, data)
 		if err != nil {
 			fmt.Printf("cache set error\n")
+			k.sendDontReloadKeepMessage(path)
 		}
 	}()
 
@@ -275,6 +285,17 @@ func (msg *dumpKeepMessage) Process(k *keep) {
 		msg.channel <- e.info
 	}
 	close(msg.channel)
+}
+
+func (msg *dontReloadKeepMessage) Process(k *keep) {
+	path := msg.path
+
+	e, ok := k.entries[path]
+	if !ok {
+		panic("Stopping reload on path that doesn't exist")
+	}
+
+	e.info.count = 0
 }
 
 func (k *keep) run() {
