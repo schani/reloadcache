@@ -128,12 +128,17 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	memcacheFlag := flag.String("memcache", "localhost:11211", "memcached host and port")
-	serverFlag := flag.String("server", "http://localhost:8085", "the proxed server")
+	serverFlag := flag.String("server", "", "the proxed server")
 	portFlag := flag.Int("port", 8081, "port on which to listen")
-	expireDurationFlag := flag.Int("expire", 10, "expire duration in seconds")
+	expireDurationFlag := flag.Int("expire", 600, "expire duration in seconds")
 	numExpiresToDecayFlag := flag.Int("decay", 5, "number of expires for one decay")
 
 	flag.Parse()
+
+	if *serverFlag == "" {
+		fmt.Fprintf(os.Stderr, "Error: -server option not given.\n")
+		os.Exit(1)
+	}
 
 	cache := memcacheCache{c: memcache.New(*memcacheFlag)}
 	err := cache.c.DeleteAll()
