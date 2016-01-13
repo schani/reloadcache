@@ -29,6 +29,10 @@ func (c memcacheCache) Set(path string, data []byte) error {
 	return c.c.Set(&memcache.Item{Key: path, Value: data})
 }
 
+func (c memcacheCache) Delete(path string) error {
+	return c.c.Delete(path)
+}
+
 func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "" && r.Method != "GET" {
 		http.Error(w, "Only GET method supported", http.StatusBadRequest)

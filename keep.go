@@ -53,8 +53,10 @@ type dumpKeepMessage struct {
 }
 
 type cache interface {
+	// FIXME: The keep never actually uses Get
 	Get(path string) (data []byte, err error)
 	Set(path string, data []byte) error
+	Delete(path string) error
 }
 
 type keep struct {
@@ -161,7 +163,12 @@ func (k *keep) fetchExpired() {
 		if e.info.numExpiredSinceLastDecay >= k.numExpiresToDecay {
 			e.info.count--
 			e.info.numExpiredSinceLastDecay = 0
-			// FIXME: delete entries with count==0
+		}
+		if e.info.count <= 0 {
+			fmt.Printf("deleting %s\n", e.info.path)
+			k.cache.Delete(e.info.path)
+			// FIXME: delete entry, too
+			continue
 		}
 		if e.info.lastFetched.Add(k.expireDuration).Before(now) {
 			fmt.Printf("fetching %s\n", e.info.path)
