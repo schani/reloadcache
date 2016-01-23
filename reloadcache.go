@@ -3,27 +3,23 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/bradfitz/gomemcache/memcache"
-	"github.com/nytimes/gziphandler"
+	"io"
 	"net/http"
 	"os"
 	"sort"
 	"time"
+
+	"github.com/bradfitz/gomemcache/memcache"
+	"github.com/nytimes/gziphandler"
+	"github.com/schani/reloadcache/keep"
 )
 
 type memcacheCache struct {
 	c *memcache.Client
 }
 
-var theKeep *keep
-
-func (c memcacheCache) Get(path string) (data []byte, err error) {
-	item, err := c.c.Get(path)
-	if err != nil {
-		return nil, err
-	}
-	return item.Value, nil
-}
+var theKeep *keep.Keep
+var theMemcache *memcache.Client
 
 func (c memcacheCache) Set(path string, data []byte) error {
 	return c.c.Set(&memcache.Item{Key: path, Value: data})
@@ -44,7 +40,7 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 		path = path + "?" + r.URL.RawQuery
 	}
 	fmt.Printf("request for %s\n", path)
-	theKeep.sendRequestMessage(path)
+	theKeep.PathRequested(path)
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 
@@ -53,25 +49,32 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 	}
 
-	data, err := theKeep.cache.Get(path)
+	var data []byte
+	item, err := theMemcache.Get(path)
 	if err == nil {
 		fmt.Printf("found in cache %s\n", path)
+		data = item.Value
 	} else {
 		fmt.Printf("not in cache - requesting %s\n", path)
 
-		waiter := make(chan fetchResult)
-		theKeep.sendFetchingMessage(path, waiter)
-
-		result, ok := <-waiter
+		result, ok := theKeep.TryLookup(path)
 		if ok {
 			fmt.Printf("got result from parallel fetch\n")
-			if result.err != nil {
-				http.Error(w, result.err.Error(), http.StatusBadRequest)
+			if result.Err != nil {
+				http.Error(w, result.Err.Error(), http.StatusBadRequest)
 				return
 			}
-			data = result.data
+			data = result.Data
 		} else {
-			theKeep.fetch(path, w)
+			writerMade := false
+			err = theKeep.Fetch(path, func(cacheWriter io.Writer) io.Writer {
+				writerMade = true
+				w.WriteHeader(http.StatusOK)
+				return io.MultiWriter(w, cacheWriter)
+			})
+			if err != nil && !writerMade {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			}
 			return
 		}
 	}
@@ -83,14 +86,14 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type entryInfos []entryInfo
+type entryInfos []keep.EntryInfo
 
 func (infos entryInfos) Len() int {
 	return len(infos)
 }
 
 func (infos entryInfos) Less(i, j int) bool {
-	return infos[i].path < infos[j].path
+	return infos[i].Path < infos[j].Path
 }
 
 func (infos entryInfos) Swap(i, j int) {
@@ -100,8 +103,8 @@ func (infos entryInfos) Swap(i, j int) {
 }
 
 func keepHandler(w http.ResponseWriter, r *http.Request) {
-	c := make(chan entryInfo)
-	theKeep.sendDumpKeepMessage(c)
+	c := make(chan keep.EntryInfo)
+	theKeep.SendDumpKeepMessage(c)
 
 	infos := make(entryInfos, 0)
 	for ei := range c {
@@ -115,13 +118,13 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th># expires since last decay</th><th>Fetching?</th></tr>")
 	for _, ei := range infos {
 		var fetchingString string
-		if ei.fetching {
+		if ei.Fetching {
 			fetchingString = "Yes"
 		} else {
 			fetchingString = "No"
 		}
 		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%d</td><td>%s</td></tr>\n",
-			ei.path, ei.count, ei.lastFetched, ei.numExpiredSinceLastDecay, fetchingString)
+			ei.Path, ei.Count, ei.LastFetched, ei.NumExpiredSinceLastDecay, fetchingString)
 	}
 	fmt.Fprintf(w, "</table></body></html>\n")
 }
@@ -140,14 +143,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	cache := memcacheCache{c: memcache.New(*memcacheFlag)}
+	theMemcache = memcache.New(*memcacheFlag)
+	cache := memcacheCache{c: theMemcache}
 	err := cache.c.DeleteAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Couldn't flush memcache: %s\n", err.Error())
 	}
 
-	theKeep = newKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
-	go theKeep.run()
+	theKeep = keep.NewKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
+	go theKeep.Run()
 
 	http.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(cacheHandler)))
 	http.HandleFunc("/admin/keep", keepHandler)

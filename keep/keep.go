@@ -1,4 +1,4 @@
-package main
+package keep
 
 import (
 	"bytes"
@@ -10,28 +10,28 @@ import (
 	"time"
 )
 
-type entryInfo struct {
-	path                     string
-	count                    int
-	lastFetched              time.Time
-	fetching                 bool
-	numExpiredSinceLastDecay int
+type EntryInfo struct {
+	Path                     string
+	Count                    int
+	LastFetched              time.Time
+	Fetching                 bool
+	NumExpiredSinceLastDecay int
 }
 
-type fetchResult struct {
-	data []byte
-	err  error
+type FetchResult struct {
+	Data []byte
+	Err  error
 }
 
 type entry struct {
-	info entryInfo
+	info EntryInfo
 	// Each waiter is a channel waiting for a byte slice.
 	// If the fetch fails we close the channel.
-	waiters []chan<- fetchResult
+	waiters []chan<- FetchResult
 }
 
 type keepMessage interface {
-	Process(k *keep)
+	process(k *Keep)
 }
 
 type requestKeepMessage struct {
@@ -40,72 +40,84 @@ type requestKeepMessage struct {
 
 type fetchingKeepMessage struct {
 	path   string
-	waiter chan<- fetchResult
+	waiter chan<- FetchResult
 }
 
 type fetchedKeepMessage struct {
 	path   string
-	result fetchResult
+	result FetchResult
 }
 
 type dumpKeepMessage struct {
-	channel chan<- entryInfo
+	channel chan<- EntryInfo
 }
 
 type dontReloadKeepMessage struct {
 	path string
 }
 
-type cache interface {
-	// FIXME: The keep never actually uses Get
-	Get(path string) (data []byte, err error)
+type Cache interface {
 	Set(path string, data []byte) error
 	Delete(path string) error
 }
 
-type keep struct {
+type Keep struct {
 	entries           map[string]*entry
 	timer             *time.Timer
 	messageChannel    chan keepMessage
-	cache             cache
+	cache             Cache
 	server            string
 	expireDuration    time.Duration
 	numExpiresToDecay int
 }
 
-func (k *keep) sendRequestMessage(path string) {
+func (k *Keep) sendRequestMessage(path string) {
 	msg := requestKeepMessage{path: path}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchingMessage(path string, waiter chan<- fetchResult) {
+func (k *Keep) sendFetchingMessage(path string, waiter chan<- FetchResult) {
 	msg := fetchingKeepMessage{path: path, waiter: waiter}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendFetchedMessage(path string, result fetchResult) {
+func (k *Keep) sendFetchedMessage(path string, result FetchResult) {
 	msg := fetchedKeepMessage{path: path, result: result}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendDumpKeepMessage(channel chan<- entryInfo) {
+func (k *Keep) SendDumpKeepMessage(channel chan<- EntryInfo) {
 	msg := dumpKeepMessage{channel: channel}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) sendDontReloadKeepMessage(path string) {
+func (k *Keep) sendDontReloadKeepMessage(path string) {
 	msg := dontReloadKeepMessage{path: path}
 	k.messageChannel <- &msg
 }
 
-func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
+func (k *Keep) PathRequested(path string) {
+    k.sendRequestMessage(path)
+}
+
+func (k *Keep) TryLookup(path string) (FetchResult, bool) {
+    waiter := make(chan FetchResult)
+    k.sendFetchingMessage(path, waiter)
+
+    result, ok := <-waiter
+    return result, ok
+}
+
+type WriterMaker func(w io.Writer) io.Writer
+
+func (k *Keep) Fetch(path string, writerMaker WriterMaker) error {
 	var data []byte
 	var err error
 
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer func() { k.sendFetchedMessage(path, fetchResult{data: data, err: err}) }()
+	defer func() { k.sendFetchedMessage(path, FetchResult{Data: data, Err: err}) }()
 
 	req, err := http.NewRequest("GET", k.server+path, nil)
 	if err != nil {
@@ -120,33 +132,17 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 	}
 
 	if strings.Split(resp.Header.Get("Content-Type"), ";")[0] != "application/json" {
-		if responseWriter != nil {
-			err = errors.New("Endpoint does not result JSON")
-			http.Error(responseWriter, err.Error(), http.StatusBadRequest)
-		}
 		fmt.Printf("not JSON: %s\n", resp.Header)
-		return nil
+		return errors.New("Endpoint does not return JSON")
 	}
 
 	buffer := new(bytes.Buffer)
-	var writer io.Writer
-
-	// FIXME: We shouldn't do HTTP stuff on the response writer here.
-	// Best not to assume a responseWriter at all but instead just
-	// get a function that takes our writer and returns the writer
-	// to actually write to.
-	if responseWriter == nil {
-		writer = buffer
-	} else {
-		responseWriter.WriteHeader(http.StatusOK)
-
-		writer = io.MultiWriter(responseWriter, buffer)
-	}
+    writer := writerMaker(buffer)
 
 	_, err = io.Copy(writer, resp.Body)
 	if err != nil {
 		fmt.Printf("copy error\n")
-		return nil
+		return err
 	}
 
 	data = buffer.Bytes()
@@ -162,42 +158,42 @@ func (k *keep) fetch(path string, responseWriter http.ResponseWriter) error {
 	return nil
 }
 
-func (k *keep) fetchExpired() {
+func (k *Keep) fetchExpired() {
 	fmt.Printf("fetching expired\n")
 	now := time.Now()
 	for _, e := range k.entries {
-		if e.info.fetching || e.info.count <= 0 {
+		if e.info.Fetching || e.info.Count <= 0 {
 			continue
 		}
-		e.info.numExpiredSinceLastDecay++
-		if e.info.numExpiredSinceLastDecay >= k.numExpiresToDecay {
-			e.info.count--
-			e.info.numExpiredSinceLastDecay = 0
+		e.info.NumExpiredSinceLastDecay++
+		if e.info.NumExpiredSinceLastDecay >= k.numExpiresToDecay {
+			e.info.Count--
+			e.info.NumExpiredSinceLastDecay = 0
 		}
-		if e.info.count <= 0 {
-			fmt.Printf("deleting %s\n", e.info.path)
-			k.cache.Delete(e.info.path)
+		if e.info.Count <= 0 {
+			fmt.Printf("deleting %s\n", e.info.Path)
+			k.cache.Delete(e.info.Path)
 			// FIXME: delete entry, too
 			continue
 		}
-		if e.info.lastFetched.Add(k.expireDuration).Before(now) {
-			fmt.Printf("fetching %s\n", e.info.path)
-			e.info.fetching = true
-			go k.fetch(e.info.path, nil)
+		if e.info.LastFetched.Add(k.expireDuration).Before(now) {
+			fmt.Printf("fetching %s\n", e.info.Path)
+			e.info.Fetching = true
+			go k.Fetch(e.info.Path, nil)
 		}
 	}
 }
 
-func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
+func (k *Keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	now := time.Now()
 	earliest := now
 	expiring = false
 	for _, e := range k.entries {
-		if e.info.fetching || e.info.count <= 0 {
+		if e.info.Fetching || e.info.Count <= 0 {
 			continue
 		}
-		if e.info.lastFetched.Before(earliest) {
-			earliest = e.info.lastFetched
+		if e.info.LastFetched.Before(earliest) {
+			earliest = e.info.LastFetched
 			expiring = true
 		}
 	}
@@ -208,7 +204,7 @@ func (k *keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *keep) serviceTimer() {
+func (k *Keep) serviceTimer() {
 	if k.timer != nil {
 		return
 	}
@@ -228,20 +224,20 @@ func (k *keep) serviceTimer() {
 	}
 }
 
-func (rkm *requestKeepMessage) Process(k *keep) {
+func (rkm *requestKeepMessage) process(k *Keep) {
 	path := rkm.path
 
 	e, ok := k.entries[path]
 	if !ok {
-		e = &entry{info: entryInfo{path: path, count: 1, lastFetched: time.Now()}}
+		e = &entry{info: EntryInfo{Path: path, Count: 1, LastFetched: time.Now()}}
 		k.entries[path] = e
 		return
 	}
 
-	e.info.count++
+	e.info.Count++
 }
 
-func (msg *fetchingKeepMessage) Process(k *keep) {
+func (msg *fetchingKeepMessage) process(k *Keep) {
 	path := msg.path
 
 	e, ok := k.entries[path]
@@ -249,16 +245,16 @@ func (msg *fetchingKeepMessage) Process(k *keep) {
 		panic("Fetching a path that hasn't been requested yet")
 	}
 
-	if e.info.fetching {
+	if e.info.Fetching {
 		fmt.Printf("adding waiter\n")
 		e.waiters = append(e.waiters, msg.waiter)
 	} else {
 		close(msg.waiter)
-		e.info.fetching = true
+		e.info.Fetching = true
 	}
 }
 
-func (msg *fetchedKeepMessage) Process(k *keep) {
+func (msg *fetchedKeepMessage) process(k *Keep) {
 	path := msg.path
 
 	e, ok := k.entries[path]
@@ -266,12 +262,12 @@ func (msg *fetchedKeepMessage) Process(k *keep) {
 		panic("Fetching a path that hasn't been requested yet")
 	}
 
-	if !e.info.fetching {
+	if !e.info.Fetching {
 		panic("We got a fetched, but we're not fetching")
 	}
 
-	e.info.lastFetched = time.Now()
-	e.info.fetching = false
+	e.info.LastFetched = time.Now()
+	e.info.Fetching = false
 
 	for _, waiter := range e.waiters {
 		waiter <- msg.result
@@ -280,14 +276,14 @@ func (msg *fetchedKeepMessage) Process(k *keep) {
 	e.waiters = e.waiters[0:0]
 }
 
-func (msg *dumpKeepMessage) Process(k *keep) {
+func (msg *dumpKeepMessage) process(k *Keep) {
 	for _, e := range k.entries {
 		msg.channel <- e.info
 	}
 	close(msg.channel)
 }
 
-func (msg *dontReloadKeepMessage) Process(k *keep) {
+func (msg *dontReloadKeepMessage) process(k *Keep) {
 	path := msg.path
 
 	e, ok := k.entries[path]
@@ -295,10 +291,10 @@ func (msg *dontReloadKeepMessage) Process(k *keep) {
 		panic("Stopping reload on path that doesn't exist")
 	}
 
-	e.info.count = 0
+	e.info.Count = 0
 }
 
-func (k *keep) run() {
+func (k *Keep) Run() {
 	k.serviceTimer()
 	for {
 		var timerChannel <-chan time.Time
@@ -307,7 +303,7 @@ func (k *keep) run() {
 		}
 		select {
 		case msg := <-k.messageChannel:
-			msg.Process(k)
+			msg.process(k)
 		case <-timerChannel:
 			k.timer = nil
 		}
@@ -315,8 +311,8 @@ func (k *keep) run() {
 	}
 }
 
-func newKeep(c cache, server string, expireDuration time.Duration, numExpiresToDecay int) *keep {
-	return &keep{cache: c,
+func NewKeep(c Cache, server string, expireDuration time.Duration, numExpiresToDecay int) *Keep {
+	return &Keep{cache: c,
 		server:            server,
 		entries:           make(map[string]*entry),
 		messageChannel:    make(chan keepMessage),
