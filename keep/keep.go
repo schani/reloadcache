@@ -54,7 +54,7 @@ type dontReloadKeepMessage struct {
 }
 
 type Cache interface {
-    Fetch(path string) (io.ReadCloser, error)
+	Fetch(path string) (io.ReadCloser, error)
 	Set(path string, data []byte) error
 	Delete(path string) error
 }
@@ -94,30 +94,30 @@ func (k *Keep) sendDontReloadKeepMessage(path string) {
 }
 
 func (k *Keep) PathRequested(path string) {
-    k.sendRequestMessage(path)
+	k.sendRequestMessage(path)
 }
 
 func (k *Keep) tryLookup(path string) (fetchResult, bool) {
-    waiter := make(chan fetchResult)
-    k.sendFetchingMessage(path, waiter)
+	waiter := make(chan fetchResult)
+	k.sendFetchingMessage(path, waiter)
 
-    result, ok := <-waiter
-    return result, ok
+	result, ok := <-waiter
+	return result, ok
 }
 
 type WriterMaker func(w io.Writer) io.Writer
 
 func (k *Keep) WaitOrFetch(path string, writerMaker WriterMaker) ([]byte, error) {
-    result, ok := k.tryLookup(path)
-    if ok {
-        fmt.Printf("got result from parallel fetch\n")
-        if result.Err != nil {
-            return nil, result.Err
-        }
-        return result.Data, nil
-    }
+	result, ok := k.tryLookup(path)
+	if ok {
+		fmt.Printf("got result from parallel fetch\n")
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return result.Data, nil
+	}
 
-    return nil, k.fetch(path, writerMaker)
+	return nil, k.fetch(path, writerMaker)
 }
 
 func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
@@ -128,15 +128,15 @@ func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
 	defer func() { k.sendFetchedMessage(path, fetchResult{Data: data, Err: err}) }()
-    
-    resp, err := k.cache.Fetch(path)
-    if err != nil {
-        return err
-    }
-    defer resp.Close()
+
+	resp, err := k.cache.Fetch(path)
+	if err != nil {
+		return err
+	}
+	defer resp.Close()
 
 	buffer := new(bytes.Buffer)
-    writer := writerMaker(buffer)
+	writer := writerMaker(buffer)
 
 	_, err = io.Copy(writer, resp)
 	if err != nil {
@@ -178,7 +178,7 @@ func (k *Keep) fetchExpired() {
 		if e.info.LastFetched.Add(k.expireDuration).Before(now) {
 			fmt.Printf("fetching %s\n", e.info.Path)
 			e.info.Fetching = true
-			go k.fetch(e.info.Path, func (w io.Writer) io.Writer { return w })
+			go k.fetch(e.info.Path, func(w io.Writer) io.Writer { return w })
 		}
 	}
 }
@@ -203,7 +203,7 @@ func (k *Keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	return expires.Sub(now), expiring
 }
 
-func (k *Keep) serviceTimer() {
+func (k *Keep) updateServiceTimer() {
 	if k.timer != nil {
 		return
 	}
@@ -296,7 +296,7 @@ func (msg *dontReloadKeepMessage) process(k *Keep) {
 // Run runs the keep in an endless loop.  You should probably
 // run this in a goroutine.
 func (k *Keep) Run() {
-	k.serviceTimer()
+	k.updateServiceTimer()
 	for {
 		var timerChannel <-chan time.Time
 		if k.timer != nil {
@@ -308,26 +308,26 @@ func (k *Keep) Run() {
 		case <-timerChannel:
 			k.timer = nil
 		}
-		k.serviceTimer()
+		k.updateServiceTimer()
 	}
 }
 
 // Dump returns a slice containing all the entries in the keep.
 // They are not sorted.
 func (k *Keep) Dump() []EntryInfo {
-    c := make(chan EntryInfo)
+	c := make(chan EntryInfo)
 	k.sendDumpKeepMessage(c)
 
-    var infos []EntryInfo
+	var infos []EntryInfo
 	for ei := range c {
 		infos = append(infos, ei)
 	}
-    return infos
+	return infos
 }
 
 // NewKeep returns a new keep.  expireDuration is the time an entry
 // takes to be refetched by the keep.  numExpiresToDecay is the number
-// of refetches it takes for the entry count to degrade by one. 
+// of refetches it takes for the entry count to degrade by one.
 func NewKeep(c Cache, expireDuration time.Duration, numExpiresToDecay int) *Keep {
 	return &Keep{cache: c,
 		entries:           make(map[string]*entry),
