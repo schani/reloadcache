@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
@@ -15,11 +17,33 @@ import (
 )
 
 type memcacheCache struct {
-	c *memcache.Client
+	c      *memcache.Client
+	server string
 }
 
 var theKeep *keep.Keep
 var theMemcache *memcache.Client
+
+func (c memcacheCache) Fetch(path string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("GET", c.server+path, nil)
+	if err != nil {
+		fmt.Printf("request construction error\n")
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("request error\n")
+		return nil, err
+	}
+
+	if strings.Split(resp.Header.Get("Content-Type"), ";")[0] != "application/json" {
+		fmt.Printf("not JSON: %s\n", resp.Header)
+		return nil, errors.New("Endpoint does not return JSON")
+	}
+
+	return resp.Body, nil
+}
 
 func (c memcacheCache) Set(path string, data []byte) error {
 	return c.c.Set(&memcache.Item{Key: path, Value: data})
@@ -57,22 +81,14 @@ func cacheHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Printf("not in cache - requesting %s\n", path)
 
-		result, ok := theKeep.TryLookup(path)
-		if ok {
-			fmt.Printf("got result from parallel fetch\n")
-			if result.Err != nil {
-				http.Error(w, result.Err.Error(), http.StatusBadRequest)
-				return
-			}
-			data = result.Data
-		} else {
-			writerMade := false
-			err = theKeep.Fetch(path, func(cacheWriter io.Writer) io.Writer {
-				writerMade = true
-				w.WriteHeader(http.StatusOK)
-				return io.MultiWriter(w, cacheWriter)
-			})
-			if err != nil && !writerMade {
+		writerMade := false
+		data, err = theKeep.WaitOrFetch(path, func(cacheWriter io.Writer) io.Writer {
+			writerMade = true
+			w.WriteHeader(http.StatusOK)
+			return io.MultiWriter(w, cacheWriter)
+		})
+		if err != nil {
+			if !writerMade {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 			}
 			return
@@ -103,13 +119,7 @@ func (infos entryInfos) Swap(i, j int) {
 }
 
 func keepHandler(w http.ResponseWriter, r *http.Request) {
-	c := make(chan keep.EntryInfo)
-	theKeep.SendDumpKeepMessage(c)
-
-	infos := make(entryInfos, 0)
-	for ei := range c {
-		infos = append(infos, ei)
-	}
+	infos := entryInfos(theKeep.Dump())
 	sort.Sort(infos)
 
 	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
@@ -144,13 +154,13 @@ func main() {
 	}
 
 	theMemcache = memcache.New(*memcacheFlag)
-	cache := memcacheCache{c: theMemcache}
+	cache := memcacheCache{c: theMemcache, server: *serverFlag}
 	err := cache.c.DeleteAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Couldn't flush memcache: %s\n", err.Error())
 	}
 
-	theKeep = keep.NewKeep(cache, *serverFlag, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
+	theKeep = keep.NewKeep(cache, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
 	go theKeep.Run()
 
 	http.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(cacheHandler)))

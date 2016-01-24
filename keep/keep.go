@@ -2,11 +2,8 @@ package keep
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"strings"
 	"time"
 )
 
@@ -18,7 +15,7 @@ type EntryInfo struct {
 	NumExpiredSinceLastDecay int
 }
 
-type FetchResult struct {
+type fetchResult struct {
 	Data []byte
 	Err  error
 }
@@ -27,7 +24,7 @@ type entry struct {
 	info EntryInfo
 	// Each waiter is a channel waiting for a byte slice.
 	// If the fetch fails we close the channel.
-	waiters []chan<- FetchResult
+	waiters []chan<- fetchResult
 }
 
 type keepMessage interface {
@@ -40,12 +37,12 @@ type requestKeepMessage struct {
 
 type fetchingKeepMessage struct {
 	path   string
-	waiter chan<- FetchResult
+	waiter chan<- fetchResult
 }
 
 type fetchedKeepMessage struct {
 	path   string
-	result FetchResult
+	result fetchResult
 }
 
 type dumpKeepMessage struct {
@@ -57,6 +54,7 @@ type dontReloadKeepMessage struct {
 }
 
 type Cache interface {
+    Fetch(path string) (io.ReadCloser, error)
 	Set(path string, data []byte) error
 	Delete(path string) error
 }
@@ -66,7 +64,6 @@ type Keep struct {
 	timer             *time.Timer
 	messageChannel    chan keepMessage
 	cache             Cache
-	server            string
 	expireDuration    time.Duration
 	numExpiresToDecay int
 }
@@ -76,17 +73,17 @@ func (k *Keep) sendRequestMessage(path string) {
 	k.messageChannel <- &msg
 }
 
-func (k *Keep) sendFetchingMessage(path string, waiter chan<- FetchResult) {
+func (k *Keep) sendFetchingMessage(path string, waiter chan<- fetchResult) {
 	msg := fetchingKeepMessage{path: path, waiter: waiter}
 	k.messageChannel <- &msg
 }
 
-func (k *Keep) sendFetchedMessage(path string, result FetchResult) {
+func (k *Keep) sendFetchedMessage(path string, result fetchResult) {
 	msg := fetchedKeepMessage{path: path, result: result}
 	k.messageChannel <- &msg
 }
 
-func (k *Keep) SendDumpKeepMessage(channel chan<- EntryInfo) {
+func (k *Keep) sendDumpKeepMessage(channel chan<- EntryInfo) {
 	msg := dumpKeepMessage{channel: channel}
 	k.messageChannel <- &msg
 }
@@ -100,8 +97,8 @@ func (k *Keep) PathRequested(path string) {
     k.sendRequestMessage(path)
 }
 
-func (k *Keep) TryLookup(path string) (FetchResult, bool) {
-    waiter := make(chan FetchResult)
+func (k *Keep) tryLookup(path string) (fetchResult, bool) {
+    waiter := make(chan fetchResult)
     k.sendFetchingMessage(path, waiter)
 
     result, ok := <-waiter
@@ -110,36 +107,38 @@ func (k *Keep) TryLookup(path string) (FetchResult, bool) {
 
 type WriterMaker func(w io.Writer) io.Writer
 
-func (k *Keep) Fetch(path string, writerMaker WriterMaker) error {
+func (k *Keep) WaitOrFetch(path string, writerMaker WriterMaker) ([]byte, error) {
+    result, ok := k.tryLookup(path)
+    if ok {
+        fmt.Printf("got result from parallel fetch\n")
+        if result.Err != nil {
+            return nil, result.Err
+        }
+        return result.Data, nil
+    }
+
+    return nil, k.fetch(path, writerMaker)
+}
+
+func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
 	var data []byte
 	var err error
 
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer func() { k.sendFetchedMessage(path, FetchResult{Data: data, Err: err}) }()
-
-	req, err := http.NewRequest("GET", k.server+path, nil)
-	if err != nil {
-		fmt.Printf("request construction error\n")
-		return err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Printf("request error\n")
-		return err
-	}
-
-	if strings.Split(resp.Header.Get("Content-Type"), ";")[0] != "application/json" {
-		fmt.Printf("not JSON: %s\n", resp.Header)
-		return errors.New("Endpoint does not return JSON")
-	}
+	defer func() { k.sendFetchedMessage(path, fetchResult{Data: data, Err: err}) }()
+    
+    resp, err := k.cache.Fetch(path)
+    if err != nil {
+        return err
+    }
+    defer resp.Close()
 
 	buffer := new(bytes.Buffer)
     writer := writerMaker(buffer)
 
-	_, err = io.Copy(writer, resp.Body)
+	_, err = io.Copy(writer, resp)
 	if err != nil {
 		fmt.Printf("copy error\n")
 		return err
@@ -179,7 +178,7 @@ func (k *Keep) fetchExpired() {
 		if e.info.LastFetched.Add(k.expireDuration).Before(now) {
 			fmt.Printf("fetching %s\n", e.info.Path)
 			e.info.Fetching = true
-			go k.Fetch(e.info.Path, nil)
+			go k.fetch(e.info.Path, func (w io.Writer) io.Writer { return w })
 		}
 	}
 }
@@ -294,6 +293,8 @@ func (msg *dontReloadKeepMessage) process(k *Keep) {
 	e.info.Count = 0
 }
 
+// Run runs the keep in an endless loop.  You should probably
+// run this in a goroutine.
 func (k *Keep) Run() {
 	k.serviceTimer()
 	for {
@@ -311,9 +312,24 @@ func (k *Keep) Run() {
 	}
 }
 
-func NewKeep(c Cache, server string, expireDuration time.Duration, numExpiresToDecay int) *Keep {
+// Dump returns a slice containing all the entries in the keep.
+// They are not sorted.
+func (k *Keep) Dump() []EntryInfo {
+    c := make(chan EntryInfo)
+	k.sendDumpKeepMessage(c)
+
+    var infos []EntryInfo
+	for ei := range c {
+		infos = append(infos, ei)
+	}
+    return infos
+}
+
+// NewKeep returns a new keep.  expireDuration is the time an entry
+// takes to be refetched by the keep.  numExpiresToDecay is the number
+// of refetches it takes for the entry count to degrade by one. 
+func NewKeep(c Cache, expireDuration time.Duration, numExpiresToDecay int) *Keep {
 	return &Keep{cache: c,
-		server:            server,
 		entries:           make(map[string]*entry),
 		messageChannel:    make(chan keepMessage),
 		expireDuration:    expireDuration,
