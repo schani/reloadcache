@@ -12,7 +12,6 @@ type EntryInfo struct {
 	Count                    int
 	LastFetched              time.Time
 	Fetching                 bool
-	NumExpiredSinceLastDecay int
 }
 
 type fetchResult struct {
@@ -166,11 +165,7 @@ func (k *Keep) fetchExpired() {
 		}
 		expired := e.info.LastFetched.Add(k.expireDuration).Before(now)
 		if expired {
-			e.info.NumExpiredSinceLastDecay++
-			if e.info.NumExpiredSinceLastDecay >= k.numExpiresToDecay {
-				e.info.Count--
-				e.info.NumExpiredSinceLastDecay = 0
-			}
+			e.info.Count--
 		}
 		if e.info.Count <= 0 {
 			fmt.Printf("deleting %s\n", e.info.Path)
@@ -233,12 +228,12 @@ func (rkm *requestKeepMessage) process(k *Keep) {
 
 	e, ok := k.entries[path]
 	if !ok {
-		e = &entry{info: EntryInfo{Path: path, Count: 1, LastFetched: time.Now()}}
+		e = &entry{info: EntryInfo{Path: path, Count: k.numExpiresToDecay, LastFetched: time.Now()}}
 		k.entries[path] = e
 		return
 	}
 
-	e.info.Count++
+	e.info.Count += k.numExpiresToDecay
 }
 
 func (msg *fetchingKeepMessage) process(k *Keep) {
