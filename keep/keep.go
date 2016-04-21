@@ -164,10 +164,13 @@ func (k *Keep) fetchExpired() {
 		if e.info.Fetching || e.info.Count <= 0 {
 			continue
 		}
-		e.info.NumExpiredSinceLastDecay++
-		if e.info.NumExpiredSinceLastDecay >= k.numExpiresToDecay {
-			e.info.Count--
-			e.info.NumExpiredSinceLastDecay = 0
+		expired := e.info.LastFetched.Add(k.expireDuration).Before(now)
+		if expired {
+			e.info.NumExpiredSinceLastDecay++
+			if e.info.NumExpiredSinceLastDecay >= k.numExpiresToDecay {
+				e.info.Count--
+				e.info.NumExpiredSinceLastDecay = 0
+			}
 		}
 		if e.info.Count <= 0 {
 			fmt.Printf("deleting %s\n", e.info.Path)
@@ -175,11 +178,13 @@ func (k *Keep) fetchExpired() {
 			// FIXME: delete entry, too
 			continue
 		}
-		if e.info.LastFetched.Add(k.expireDuration).Before(now) {
-			fmt.Printf("fetching %s\n", e.info.Path)
-			e.info.Fetching = true
-			go k.fetch(e.info.Path, func(w io.Writer) io.Writer { return w })
+		if !expired {
+			continue
 		}
+
+		fmt.Printf("fetching %s\n", e.info.Path)
+		e.info.Fetching = true
+		go k.fetch(e.info.Path, func(w io.Writer) io.Writer { return w })
 	}
 }
 
