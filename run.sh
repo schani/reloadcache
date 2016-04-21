@@ -3,4 +3,4 @@
 set -e
 
 memcached -I32m -m1g -d -u memcached
-/app/reloadcache -server "$RELOADCACHE_SERVER"
+/app/reloadcache -decay 50 -server "$RELOADCACHE_SERVER"
