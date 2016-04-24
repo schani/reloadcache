@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"time"
 )
 
@@ -163,6 +164,11 @@ func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
 	return nil
 }
 
+func (k *Keep) expireTime(ei EntryInfo) time.Time {
+	duration := time.Duration(math.Max(float64(k.expireDuration), float64(ei.LastDuration*5)))
+	return ei.LastFetched.Add(duration)
+}
+
 func (k *Keep) fetchExpired() {
 	fmt.Printf("fetching expired\n")
 	now := time.Now()
@@ -170,7 +176,8 @@ func (k *Keep) fetchExpired() {
 		if e.info.Fetching || e.info.Count <= 0 {
 			continue
 		}
-		expired := e.info.LastFetched.Add(k.expireDuration).Before(now)
+		expireTime := k.expireTime(e.info)
+		expired := expireTime.Before(now)
 		if expired {
 			e.info.Count--
 		}
@@ -192,22 +199,22 @@ func (k *Keep) fetchExpired() {
 
 func (k *Keep) shortestTimeout() (duration time.Duration, expiring bool) {
 	now := time.Now()
-	earliest := now
+	earliest := now.Add(time.Hour * 24 * 365)
 	expiring = false
 	for _, e := range k.entries {
 		if e.info.Fetching || e.info.Count <= 0 {
 			continue
 		}
-		if e.info.LastFetched.Before(earliest) {
-			earliest = e.info.LastFetched
+		expireTime := k.expireTime(e.info)
+		if expireTime.Before(earliest) {
+			earliest = expireTime
 			expiring = true
 		}
 	}
-	expires := earliest.Add(k.expireDuration)
-	if expires.Before(now) {
+	if earliest.Before(now) {
 		return 0, expiring
 	}
-	return expires.Sub(now), expiring
+	return earliest.Sub(now), expiring
 }
 
 func (k *Keep) updateServiceTimer() {
