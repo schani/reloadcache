@@ -11,12 +11,15 @@ type EntryInfo struct {
 	Path                     string
 	Count                    int
 	LastFetched              time.Time
+	LastDuration			 time.Duration
+	LastErr					 error
 	Fetching                 bool
 }
 
 type fetchResult struct {
 	Data []byte
 	Err  error
+	duration time.Duration
 }
 
 type entry struct {
@@ -122,13 +125,17 @@ func (k *Keep) WaitOrFetch(path string, writerMaker WriterMaker) ([]byte, error)
 func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
 	var data []byte
 	var err error
+	var duration time.Duration
 
 	// If we don't do this, a request error will lead to
 	// the entry always being in fetching state, but it won't
 	// ever actually be fetched again.
-	defer func() { k.sendFetchedMessage(path, fetchResult{Data: data, Err: err}) }()
+	defer func() { k.sendFetchedMessage(path, fetchResult{Data: data, Err: err, duration: duration}) }()
 
+	startTime := time.Now()
 	resp, err := k.cache.Fetch(path)
+	endTime := time.Now()
+	duration = endTime.Sub(startTime)
 	if err != nil {
 		return err
 	}
@@ -267,6 +274,8 @@ func (msg *fetchedKeepMessage) process(k *Keep) {
 
 	e.info.LastFetched = time.Now()
 	e.info.Fetching = false
+	e.info.LastDuration = msg.result.duration
+	e.info.LastErr = msg.result.Err
 
 	for _, waiter := range e.waiters {
 		waiter <- msg.result

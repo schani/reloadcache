@@ -125,7 +125,7 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 
 	fmt.Fprintf(w, "<html><body><table>\n")
-	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th>Fetching?</th></tr>")
+	fmt.Fprintf(w, "<tr><th>Path</th><th>Count</th><th>Last fetched</th><th>Last duration</th><th>Last error</th><th>Fetching?</th></tr>")
 	for _, ei := range infos {
 		var fetchingString string
 		if ei.Fetching {
@@ -133,8 +133,12 @@ func keepHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			fetchingString = "No"
 		}
-		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>\n",
-			ei.Path, ei.Count, ei.LastFetched, fetchingString)
+		errorString := ""
+		if ei.LastErr != nil {
+			errorString = ei.LastErr.Error()
+		}
+		fmt.Fprintf(w, "<tr><td>%s</td><td>%d</td><td>%s</td><td>%.1fs</td><td>%s</td><td>%s</td></tr>\n",
+			ei.Path, ei.Count, ei.LastFetched, ei.LastDuration.Seconds(), errorString, fetchingString)
 	}
 	fmt.Fprintf(w, "</table></body></html>\n")
 }
