@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 env GOOS=linux GOARCH=amd64 go build -o reloadcache *.go
 docker build -t reloadcache .
 rm reloadcache
