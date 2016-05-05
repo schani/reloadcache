@@ -69,6 +69,7 @@ type Keep struct {
 	cache             Cache
 	expireDuration    time.Duration
 	numExpiresToDecay int
+	durationThreshold time.Duration
 }
 
 func (k *Keep) sendRequestMessage(path string) {
@@ -149,6 +150,11 @@ func (k *Keep) fetch(path string, writerMaker WriterMaker) error {
 	if err != nil {
 		fmt.Printf("copy error\n")
 		return err
+	}
+	
+	if duration < k.durationThreshold {
+		k.sendDontReloadKeepMessage(path)
+		return nil
 	}
 
 	data = buffer.Bytes()
@@ -344,10 +350,11 @@ func (k *Keep) Dump() []EntryInfo {
 // NewKeep returns a new keep.  expireDuration is the time an entry
 // takes to be refetched by the keep.  numExpiresToDecay is the number
 // of refetches it takes for the entry count to degrade by one.
-func NewKeep(c Cache, expireDuration time.Duration, numExpiresToDecay int) *Keep {
+func NewKeep(c Cache, expireDuration time.Duration, numExpiresToDecay int, durationThreshold time.Duration) *Keep {
 	return &Keep{cache: c,
 		entries:           make(map[string]*entry),
 		messageChannel:    make(chan keepMessage),
 		expireDuration:    expireDuration,
-		numExpiresToDecay: numExpiresToDecay}
+		numExpiresToDecay: numExpiresToDecay,
+		durationThreshold: durationThreshold}
 }

@@ -149,6 +149,7 @@ func main() {
 	portFlag := flag.Int("port", 8081, "port on which to listen")
 	expireDurationFlag := flag.Int("expire", 600, "expire duration in seconds")
 	numExpiresToDecayFlag := flag.Int("decay", 5, "number of expires for one decay")
+	durationThresholdFlag := flag.Int("refresh-duration", 200, "minimum duration in ms to reload")
 
 	flag.Parse()
 
@@ -164,7 +165,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Couldn't flush memcache: %s\n", err.Error())
 	}
 
-	theKeep = keep.NewKeep(cache, time.Duration(*expireDurationFlag)*time.Second, *numExpiresToDecayFlag)
+	theKeep = keep.NewKeep(cache,
+		time.Duration(*expireDurationFlag)*time.Second,
+		*numExpiresToDecayFlag,
+		time.Duration(*durationThresholdFlag)*time.Millisecond)
 	go theKeep.Run()
 
 	http.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(cacheHandler)))
